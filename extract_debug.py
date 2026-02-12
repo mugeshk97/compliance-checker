@@ -118,7 +118,7 @@ if __name__ == "__main__":
     """
 
     fa = """
-    Product info here. Full contraindications include Hypersensitivity to the active substance.
+    Product info here. Full contraindications include Hypersensitivity to the less active substance.
     Important warnings May cause drowsiness while driving. Do not operate heavy machinery.
     Promo ends. Adverse Reactions: Headache, nausea possible.
     """
