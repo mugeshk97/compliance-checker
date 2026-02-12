@@ -1,56 +1,48 @@
 from typing import List, Tuple
-import re
+
+from src.alignment import Token
 
 
-def label_fa_words(
-    fa_text: str, matches: List[Tuple[int, int, int]]
-) -> Tuple[List[str], str]:
+def extract_contextual_isi(
+    fa_text: str,
+    fa_tokens: List[Token],
+    matches: List[Tuple[int, int, int]],
+    max_gap: int = 50,
+) -> str:
     """
-    Labels words in FA as ISI or marketing based on character matches.
-    Returns:
-        - List of labeled words (or tuples with labels) - sticking to user request "label FA words"
-        - Reconstructed ISI string from FA
+    Extracts ISI from FA, including text between close matches (gap <= max_gap).
+    matches: List of (isi_token_start, fa_token_start, token_length)
     """
-    if not fa_text:
-        return [], ""
+    if not fa_text or not matches or not fa_tokens:
+        return ""
 
-    # 1. Create character mask
-    # 0 = Marketing, 1 = ISI
-    mask = [0] * len(fa_text)
-
+    # Convert matched FA token ranges to character spans
+    spans: List[Tuple[int, int]] = []
     for _, fa_start, length in matches:
-        for i in range(fa_start, fa_start + length):
-            if i < len(mask):
-                mask[i] = 1
+        if fa_start >= len(fa_tokens) or length <= 0:
+            continue
+        last_index = min(fa_start + length - 1, len(fa_tokens) - 1)
+        span_start = fa_tokens[fa_start][1]
+        span_end = fa_tokens[last_index][2]
+        spans.append((span_start, span_end))
 
-    # 2. Split FA into words (keeping track of indices to map back to mask)
-    # Simple whitespace splitting for now, but we need character indices
-    # Regex iter is better to get span
+    if not spans:
+        return ""
 
-    reconstructed_isi_parts = []
-    labeled_words = []  # List of (word, label)
+    # Sort and merge spans by character gap
+    spans.sort(key=lambda x: x[0])
+    merged_blocks: List[Tuple[int, int]] = []
 
-    # Using a simple regex to capture words and everything else as delimiters if needed
-    # But usually "words" means linguistic words.
-    # Let's iterate over tokens.
-
-    for match in re.finditer(r"\S+", fa_text):
-        word = match.group()
-        start, end = match.span()
-
-        # Calculate coverage of this word
-        word_mask = mask[start:end]
-        isi_char_count = sum(word_mask)
-
-        # Threshold: if > 50% of characters are ISI, label as ISI
-        if len(word) > 0 and (isi_char_count / len(word)) > 0.5:
-            label = "ISI"
-            reconstructed_isi_parts.append(word)
+    current_start, current_end = spans[0]
+    for span_start, span_end in spans[1:]:
+        gap = span_start - current_end
+        if 0 <= gap <= max_gap:
+            current_end = max(current_end, span_end)
         else:
-            label = "MARKETING"
+            merged_blocks.append((current_start, current_end))
+            current_start, current_end = span_start, span_end
 
-        labeled_words.append((word, label))
+    merged_blocks.append((current_start, current_end))
 
-    reconstructed_isi = " ".join(reconstructed_isi_parts)
-
-    return labeled_words, reconstructed_isi
+    # Extract raw FA substrings to preserve punctuation and spacing
+    return " ".join(fa_text[start:end] for start, end in merged_blocks)

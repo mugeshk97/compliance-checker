@@ -6,12 +6,13 @@ from dotenv import load_dotenv
 from src.extraction import extract_text_from_pdf
 from src.normalization import normalize_text
 from src.alignment import get_isi_matches_in_fa
-from src.labeling import label_fa_words
+from src.labeling import extract_contextual_isi
 from src.metrics import (
     calculate_coverage,
     calculate_authenticity,
-    get_missing_isi_segments,
     get_edits,
+    get_simple_diff,
+    get_unexpected_additions,
 )
 
 
@@ -50,17 +51,24 @@ def main():
 
         # 3. Alignment
         print("\n--- Step 3: Aligning & Matching ---")
-        matches = get_isi_matches_in_fa(isi_norm, fa_norm)
+        matches, isi_tokens, fa_tokens = get_isi_matches_in_fa(isi_norm, fa_norm)
         print(f"Found {len(matches)} matching blocks.")
 
-        # 4. Labeling & Reconstruction
-        print("\n--- Step 4: Labeling & Reconstruction ---")
-        labeled_words, reconstructed_isi = label_fa_words(fa_norm, matches)
+        # 4. Extract ISI From FA
+        print("\n--- Step 4: Extracting ISI From FA ---")
+        extracted_isi = extract_contextual_isi(
+            fa_norm, fa_tokens, matches, max_gap=50
+        )
+        print(
+            f'Extracted ISI from FA: "{extracted_isi[:100]}..."'
+            if len(extracted_isi) > 100
+            else f'Extracted ISI from FA: "{extracted_isi}"'
+        )
 
         # 5. Metrics
         print("\n--- Step 5: Calculating Metrics ---")
-        coverage = calculate_coverage(isi_norm, matches)
-        authenticity = calculate_authenticity(isi_norm, reconstructed_isi)
+        coverage = calculate_coverage(isi_tokens, matches)
+        authenticity = calculate_authenticity(isi_norm, extracted_isi)
 
         print("\n" + "=" * 30)
         print("       COMPLIANCE REPORT       ")
@@ -70,15 +78,26 @@ def main():
         print("-" * 30)
 
         # Detailed Report
-        missing_segments = get_missing_isi_segments(isi_norm, matches)
+        missing_segments = get_simple_diff(isi_norm, fa_norm)
+
         if missing_segments:
-            print("\n[MISSING ISI SEGMENTS]")
+            print("\n[MISSING ISI SEGMENTS (Simple Diff)]")
             for i, seg in enumerate(missing_segments, 1):
                 print(f'{i}. "{seg}"')
         else:
             print("\n[NO MISSING ISI SEGMENTS FOUND]")
 
-        edits = get_edits(isi_norm, reconstructed_isi)
+        # Reverse Diff (Additions)
+        additions = get_unexpected_additions(isi_norm, extracted_isi)
+
+        if additions:
+            print("\n[UNEXPECTED ADDITIONS (Reverse Diff)]")
+            for i, seg in enumerate(additions, 1):
+                print(f'{i}. "{seg}"')
+        else:
+            print("\n[NO UNEXPECTED ADDITIONS FOUND]")
+
+        edits = get_edits(isi_norm, extracted_isi)
         if edits:
             print("\n[AUTHENTICITY ISSUES (EDITS)]")
             # Limit to first 10 edits to avoid spamming console

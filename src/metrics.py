@@ -1,29 +1,27 @@
 import difflib
 from typing import List, Tuple
 
+from src.alignment import Token
 
-def calculate_coverage(isi_text: str, matches: List[Tuple[int, int, int]]) -> float:
-    """
-    Calculates what percentage of the ISI text is present in the FA.
 
-    matches: List of (isi_start, fa_start, length)
+def calculate_coverage(isi_tokens: List[Token], matches: List[Tuple[int, int, int]]) -> float:
     """
-    if not isi_text:
+    Calculates what percentage of the ISI tokens are present in the FA.
+
+    matches: List of (isi_token_start, fa_token_start, token_length)
+    """
+    if not isi_tokens:
         return 0.0
 
-    # We need to count unique ISI characters covered.
-    # Matches might overlap in ISI? Usually difflib produces non-overlapping matches in A.
-    # But let's be safe and use a mask for ISI.
-
-    isi_mask = [0] * len(isi_text)
+    isi_mask = [0] * len(isi_tokens)
 
     for isi_start, _, length in matches:
         for i in range(isi_start, isi_start + length):
             if i < len(isi_mask):
                 isi_mask[i] = 1
 
-    covered_chars = sum(isi_mask)
-    return covered_chars / len(isi_text)
+    covered_tokens = sum(isi_mask)
+    return covered_tokens / len(isi_tokens)
 
 
 def calculate_authenticity(original_isi: str, reconstructed_isi: str) -> float:
@@ -38,42 +36,6 @@ def calculate_authenticity(original_isi: str, reconstructed_isi: str) -> float:
 
     matcher = difflib.SequenceMatcher(None, original_isi, reconstructed_isi)
     return matcher.ratio()
-
-
-def get_missing_isi_segments(
-    isi_text: str, matches: List[Tuple[int, int, int]]
-) -> List[str]:
-    """
-    Identifies segments of ISI text that are NOT covered by matches.
-    """
-    if not isi_text:
-        return []
-
-    isi_mask = [0] * len(isi_text)
-    for isi_start, _, length in matches:
-        for i in range(isi_start, isi_start + length):
-            if i < len(isi_mask):
-                isi_mask[i] = 1
-
-    missing_segments = []
-    current_segment = []
-
-    for i, covered in enumerate(isi_mask):
-        if covered == 0:
-            current_segment.append(isi_text[i])
-        else:
-            if current_segment:
-                segment_str = "".join(current_segment).strip()
-                if len(segment_str) > 5:  # Filter out tiny noise
-                    missing_segments.append(segment_str)
-                current_segment = []
-
-    if current_segment:
-        segment_str = "".join(current_segment).strip()
-        if len(segment_str) > 5:
-            missing_segments.append(segment_str)
-
-    return missing_segments
 
 
 def get_edits(original_isi: str, reconstructed_isi: str) -> List[str]:
@@ -95,3 +57,55 @@ def get_edits(original_isi: str, reconstructed_isi: str) -> List[str]:
             )
 
     return edits
+
+
+def get_simple_diff(isi_text: str, fa_text: str) -> List[str]:
+    """
+    Directly compares ISI vs FA to identify missing text blocks (order-sensitive).
+    Returns a list of strings that are present in ISI but missing/deleted in FA.
+    """
+    if not isi_text:
+        return []
+
+    matcher = difflib.SequenceMatcher(None, isi_text, fa_text)
+    missing_blocks = []
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "delete":
+            # Text in ISI [i1:i2] is missing in FA
+            segment = isi_text[i1:i2].strip()
+            if len(segment) > 5:  # Filter small noise (punctuation etc)
+                missing_blocks.append(segment)
+        elif tag == "replace":
+            # Text in ISI [i1:i2] was replaced by something else (effectively missing)
+            segment = isi_text[i1:i2].strip()
+            if len(segment) > 5:
+                missing_blocks.append(segment)
+
+    return missing_blocks
+
+
+def get_unexpected_additions(isi_text: str, fa_text: str) -> List[str]:
+    """
+    Reverse Diff: Checks for text present in FA that is NOT in ISI.
+    matches: List of strings that are "Inserted" or "Replaced" in FA.
+    """
+    if not isi_text or not fa_text:
+        return []
+
+    matcher = difflib.SequenceMatcher(None, isi_text, fa_text)
+    additions = []
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "insert":
+            # Text in FA [j1:j2] is new (not in ISI)
+            segment = fa_text[j1:j2].strip()
+            if len(segment) > 5:
+                additions.append(segment)
+        elif tag == "replace":
+            # Text in FA [j1:j2] replaced something in ISI
+            segment = fa_text[j1:j2].strip()
+            if len(segment) > 5:
+                additions.append(segment)
+
+    return additions

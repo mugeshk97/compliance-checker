@@ -1,11 +1,12 @@
 from src.normalization import normalize_text
 from src.alignment import get_isi_matches_in_fa
-from src.labeling import label_fa_words
+from src.labeling import extract_contextual_isi
 from src.metrics import (
     calculate_coverage,
     calculate_authenticity,
-    get_missing_isi_segments,
     get_edits,
+    get_simple_diff,
+    get_unexpected_additions,
 )
 
 
@@ -23,24 +24,30 @@ def run_test_scenario(name: str, description: str, isi_raw: str, fa_raw: str):
     print(f"FA:  '{fa_norm}'")
 
     # Alignment
-    matches = get_isi_matches_in_fa(isi_norm, fa_norm)
+    matches, isi_tokens, fa_tokens = get_isi_matches_in_fa(isi_norm, fa_norm)
 
-    # Labeling & Reconstruction
-    _, reconstructed_isi = label_fa_words(fa_norm, matches)
+    # Extract ISI from FA (including small gaps)
+    extracted_isi = extract_contextual_isi(
+        fa_norm, fa_tokens, matches, max_gap=50
+    )
 
     # Metrics
-    coverage = calculate_coverage(isi_norm, matches)
-    authenticity = calculate_authenticity(isi_norm, reconstructed_isi)
+    coverage = calculate_coverage(isi_tokens, matches)
+    authenticity = calculate_authenticity(isi_norm, extracted_isi)
 
     print(f"\nCoverage:     {coverage:.2%}")
     print(f"Authenticity: {authenticity:.2%}")
 
     # Reporting
-    missing = get_missing_isi_segments(isi_norm, matches)
+    missing = get_simple_diff(isi_norm, fa_norm)
     if missing:
         print(f"Missing Segments: {missing}")
 
-    edits = get_edits(isi_norm, reconstructed_isi)
+    additions = get_unexpected_additions(isi_norm, extracted_isi)
+    if additions:
+        print(f"Unexpected Additions: {additions}")
+
+    edits = get_edits(isi_norm, extracted_isi)
     if edits:
         print("Edits/Differences:")
         for e in edits[:5]:  # Show first 5
@@ -75,7 +82,7 @@ def main():
         },
         {
             "name": "Sentence Reordering",
-            "description": "Safety sentences appear in a different order. Coverage should still be 100%.",
+            "description": "Safety sentences appear in a different order. Coverage remains 100%.",
             "isi": "Store in cool place. Keep away from children.",
             "fa": "Keep away from children. Also, Store in cool place.",
         },
@@ -164,6 +171,14 @@ def main():
             "description": "Contact info inserted in the middle of safety text.",
             "isi": "Report side effects to FDA.",
             "fa": "Report side effects (www.fda.gov) to FDA.",
+        },
+        {
+            "name": "Major Hallucination (Reverse Diff Check)",
+            "description": "FA adds a safety warning not in ISI within a block.",
+            "isi": "Side effects: Headache.",
+            "fa": "Side effects: Headache and Instant Death.",
+            # " and Instant Death." (19 chars) is < 50 chars gap.
+            # It should be picked up by Contextual Extraction.
         },
     ]
 
