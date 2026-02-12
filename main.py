@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 from src.extraction import extract_text_from_pdf
 from src.normalization import normalize_text
-from src.alignment import get_isi_matches_in_fa
+from src.alignment import extract_isi_from_fa
 from src.labeling import label_fa_words
 from src.metrics import (
     calculate_coverage,
@@ -50,17 +50,19 @@ def main():
 
         # 3. Alignment
         print("\n--- Step 3: Aligning & Matching ---")
-        matches = get_isi_matches_in_fa(isi_norm, fa_norm)
-        print(f"Found {len(matches)} matching blocks.")
+        matched_mask, extracted_isi = extract_isi_from_fa(isi_norm, fa_norm)
+        print(
+            f"Matched {sum(1 for m in matched_mask if m)} of {len(matched_mask)} ISI tokens."
+        )
 
         # 4. Labeling & Reconstruction
         print("\n--- Step 4: Labeling & Reconstruction ---")
-        labeled_words, reconstructed_isi = label_fa_words(fa_norm, matches)
+        labeled_words = label_fa_words(fa_norm, isi_norm)
 
         # 5. Metrics
         print("\n--- Step 5: Calculating Metrics ---")
-        coverage = calculate_coverage(isi_norm, matches)
-        authenticity = calculate_authenticity(isi_norm, reconstructed_isi)
+        coverage = calculate_coverage(matched_mask)
+        authenticity = calculate_authenticity(isi_norm, extracted_isi)
 
         print("\n" + "=" * 30)
         print("       COMPLIANCE REPORT       ")
@@ -70,7 +72,7 @@ def main():
         print("-" * 30)
 
         # Detailed Report
-        missing_segments = get_missing_isi_segments(isi_norm, matches)
+        missing_segments = get_missing_isi_segments(isi_norm, matched_mask)
         if missing_segments:
             print("\n[MISSING ISI SEGMENTS]")
             for i, seg in enumerate(missing_segments, 1):
@@ -78,7 +80,7 @@ def main():
         else:
             print("\n[NO MISSING ISI SEGMENTS FOUND]")
 
-        edits = get_edits(isi_norm, reconstructed_isi)
+        edits = get_edits(isi_norm, extracted_isi)
         if edits:
             print("\n[AUTHENTICITY ISSUES (EDITS)]")
             # Limit to first 10 edits to avoid spamming console

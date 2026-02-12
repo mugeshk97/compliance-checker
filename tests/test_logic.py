@@ -1,5 +1,5 @@
 from src.normalization import normalize_text
-from src.alignment import get_isi_matches_in_fa
+from src.alignment import extract_isi_from_fa
 from src.labeling import label_fa_words
 from src.metrics import (
     calculate_coverage,
@@ -23,24 +23,26 @@ def run_test_scenario(name: str, description: str, isi_raw: str, fa_raw: str):
     print(f"FA:  '{fa_norm}'")
 
     # Alignment
-    matches = get_isi_matches_in_fa(isi_norm, fa_norm)
+    matched_mask, extracted_isi = extract_isi_from_fa(isi_norm, fa_norm)
 
-    # Labeling & Reconstruction
-    _, reconstructed_isi = label_fa_words(fa_norm, matches)
+    # Labeling
+    label_fa_words(fa_norm, isi_norm)
+
+    print(f"Extracted ISI (ISI order): '{extracted_isi}'")
 
     # Metrics
-    coverage = calculate_coverage(isi_norm, matches)
-    authenticity = calculate_authenticity(isi_norm, reconstructed_isi)
+    coverage = calculate_coverage(matched_mask)
+    authenticity = calculate_authenticity(isi_norm, extracted_isi)
 
     print(f"\nCoverage:     {coverage:.2%}")
     print(f"Authenticity: {authenticity:.2%}")
 
     # Reporting
-    missing = get_missing_isi_segments(isi_norm, matches)
+    missing = get_missing_isi_segments(isi_norm, matched_mask)
     if missing:
         print(f"Missing Segments: {missing}")
 
-    edits = get_edits(isi_norm, reconstructed_isi)
+    edits = get_edits(isi_norm, extracted_isi)
     if edits:
         print("Edits/Differences:")
         for e in edits[:5]:  # Show first 5
@@ -75,9 +77,15 @@ def main():
         },
         {
             "name": "Sentence Reordering",
-            "description": "Safety sentences appear in a different order. Coverage should still be 100%.",
+            "description": "Safety sentences appear in a different order. Coverage stays high; authenticity should drop.",
             "isi": "Store in cool place. Keep away from children.",
             "fa": "Keep away from children. Also, Store in cool place.",
+        },
+        {
+            "name": "Reordering Penalty",
+            "description": "FA reorders ISI clauses; authenticity should drop due to order.",
+            "isi": "Do not drive. May cause dizziness.",
+            "fa": "May cause dizziness. Marketing text here. Do not drive.",
         },
         {
             "name": "Interrupted Word (Hyphenation)",

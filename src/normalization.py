@@ -20,3 +20,14 @@ def normalize_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text)
 
     return text.strip()
+
+
+def tokenize_text(text: str) -> list[str]:
+    """
+    Splits text into tokens using non-whitespace segments.
+    Keeps punctuation attached to words so punctuation differences count as edits.
+    """
+    if not text:
+        return []
+
+    return re.findall(r"\S+", text)
