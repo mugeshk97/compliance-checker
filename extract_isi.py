@@ -227,8 +227,8 @@ if __name__ == "__main__":
     matches = find_isi_in_document(
         DOCUMENT_TEXT,
         GOLDEN_ISI,
-        min_length=30,
-        similarity_threshold=0.85,
+        min_length=3,
+        similarity_threshold=0.4,
         use_token_sort=True,
         return_positions=True
     )
