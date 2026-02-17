@@ -10,11 +10,15 @@ A tool to verify pharmaceutical promotional compliance by comparing an "ISI" (Im
     ```
     (or just `uv sync`)
 
-2.  **Configure Credentials**:
+2.  **Configure Credentials (Managed Identity)**:
+    The application uses `DefaultAzureCredential` for keyless authentication. Ensure you are logged into Azure via CLI or running in an environment with a Managed Identity (e.g., Azure VM, App Service).
+    
     Create a `.env` file in the root directory with:
     ```
-    AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT="https://<your-endpoint>.cognitiveservices.azure.com/"
-    AZURE_DOCUMENT_INTELLIGENCE_KEY="<your-key>"
+    AZURE_OPENAI_ENDPOINT="https://<your-resource>.openai.azure.com/"
+    AZURE_OPENAI_DEPLOYMENT_NAME="<your-deployment-name>"
+    AZURE_OPENAI_API_VERSION="2024-02-15-preview"
+    AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT="https://<your-resource>.cognitiveservices.azure.com/"
     ```
 
 3.  **Prepare Data**:
