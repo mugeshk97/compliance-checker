@@ -1,16 +1,22 @@
-from typing import TypedDict, Annotated, List, Dict, Optional
 import operator
 import os
+import warnings
+from typing import TypedDict, Annotated, List, Dict, Optional
+
 from dotenv import load_dotenv
 from rapidfuzz import fuzz, distance
+from pydantic import BaseModel
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+from azure.ai.documentintelligence import DocumentIntelligenceClient
+from azure.core.credentials import AzureKeyCredential
 
 from langgraph.graph import StateGraph, END
 from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from pydantic import BaseModel
-from azure.identity import DefaultAzureCredential, get_bearer_token_provider
-from azure.ai.documentintelligence import DocumentIntelligenceClient
+# Suppress Pydantic warnings for serialization
+warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
+
 
 # =========================================================
 # ENV
@@ -65,13 +71,22 @@ class ComparisonResult(BaseModel):
     notes: str
 
 
+class ScoreBreakdown(BaseModel):
+    analysis_completeness: float
+    analysis_accuracy: float
+    final_adjustment: float
+
+
 class ReasoningResult(BaseModel):
     final_score: float
     reasoning: str
-    breakdown: Dict[str, float]
+    breakdown: ScoreBreakdown
+    missing_content: List[str]
+    extra_content: List[str]
 
 
 # =========================================================
+
 # LANGGRAPH STATE
 # =========================================================
 
@@ -86,7 +101,6 @@ class ISIExtractionState(TypedDict):
 
     isi_locations: List[Dict]
     extracted_isi_chunks: Annotated[List[Dict], operator.add]
-    table_isi_content: List[Dict]
 
     consolidated_isi: str
     isi_metadata: Dict
@@ -109,24 +123,52 @@ class ISIExtractionState(TypedDict):
 # AZURE CLIENTS
 # =========================================================
 
-credential = DefaultAzureCredential()
+# 1. Document Intelligence Client
+doc_endpoint = os.getenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT")
+doc_key = os.getenv("AZURE_DOCUMENT_INTELLIGENCE_KEY")
 
-doc_client = DocumentIntelligenceClient(
-    endpoint=os.getenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT"), credential=credential
-)
+if doc_key:
+    doc_client = DocumentIntelligenceClient(
+        endpoint=doc_endpoint, credential=AzureKeyCredential(doc_key)
+    )
+else:
+    credential = DefaultAzureCredential()
+    doc_client = DocumentIntelligenceClient(
+        endpoint=doc_endpoint, credential=credential
+    )
 
-token_provider = get_bearer_token_provider(
-    credential, "https://cognitiveservices.azure.com/.default"
-)
 
-base_llm = AzureChatOpenAI(
-    azure_ad_token_provider=token_provider,
-    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-    azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME"),
-    openai_api_version="2024-02-15-preview",
-    temperature=0,
-    max_retries=3,
+# 2. Azure OpenAI Client
+aoai_api_key = os.getenv("AZURE_OPENAI_API_KEY")
+aoai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+aoai_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME") or os.getenv(
+    "AZURE_OPENAI_CHAT_DEPLOYMENT"
 )
+aoai_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+
+if aoai_api_key:
+    base_llm = AzureChatOpenAI(
+        api_key=aoai_api_key,
+        azure_endpoint=aoai_endpoint,
+        azure_deployment=aoai_deployment,
+        api_version=aoai_api_version,
+        temperature=0,
+        max_retries=3,
+    )
+else:
+    # Fallback to Managed Identity
+    credential = DefaultAzureCredential()
+    token_provider = get_bearer_token_provider(
+        credential, "https://cognitiveservices.azure.com/.default"
+    )
+    base_llm = AzureChatOpenAI(
+        azure_ad_token_provider=token_provider,
+        azure_endpoint=aoai_endpoint,
+        azure_deployment=aoai_deployment,
+        api_version=aoai_api_version,
+        temperature=0,
+        max_retries=3,
+    )
 
 # =========================================================
 # NODE 1 — LAYOUT EXTRACTION
@@ -247,47 +289,6 @@ Locations:
 
 
 # =========================================================
-# NODE 4 — TABLE ISI
-# =========================================================
-
-
-def extract_table_isi_node(state: ISIExtractionState) -> ISIExtractionState:
-
-    if not state["layout_tables"]:
-        return {"table_isi_content": []}
-
-    table_results = []
-
-    for idx, table in enumerate(state["layout_tables"]):
-        text = " ".join(cell["content"] for cell in table["cells"])
-
-        if any(
-            x in text.lower()
-            for x in [
-                "adverse",
-                "warning",
-                "contraindication",
-                "side effect",
-                "toxicity",
-            ]
-        ):
-            table_results.append(
-                {"table_index": idx, "content": text, "table_type": "safety_data"}
-            )
-
-    return {"table_isi_content": table_results}
-
-
-# =========================================================
-# JOIN NODE (FIXES LANGGRAPH RACE CONDITION)
-# =========================================================
-
-
-def join_node(state: ISIExtractionState) -> ISIExtractionState:
-    return state
-
-
-# =========================================================
 # NODE 5 — CONSOLIDATION
 # =========================================================
 
@@ -302,8 +303,6 @@ Combine and deduplicate all ISI.
 Chunks:
 {state["extracted_isi_chunks"]}
 
-Tables:
-{state["table_isi_content"]}
 """)
 
     metadata = state.get("isi_metadata", {})
@@ -438,6 +437,7 @@ Focus on:
 2. Accuracy (Is the text faithful?)
 
 Return reasoning for the score and the breakdown.
+Explicitly list what content is MISSING compared to the original, and what content is EXTRA.
 """
 
     result: ReasoningResult = llm.invoke(prompt)
@@ -456,8 +456,8 @@ def build_graph():
     g.add_node("layout", extract_layout_node)
     g.add_node("detect", detect_isi_locations_node)
     g.add_node("extract", extract_isi_content_node)
-    g.add_node("table", extract_table_isi_node)
-    g.add_node("join", join_node)
+    # g.add_node("table", extract_table_isi_node)  # Removed heuristic
+    # g.add_node("join", join_node) # Removed join
     g.add_node("consolidate", consolidate_isi_node)
 
     g.add_node("compare_original_fa", compare_original_fa_node)
@@ -468,13 +468,12 @@ def build_graph():
     g.add_edge("layout", "detect")
 
     g.add_edge("detect", "extract")
-    g.add_edge("detect", "table")
+    # g.add_edge("detect", "table")
     g.add_edge("detect", "compare_original_fa")  # Can run parallel to extraction
 
-    g.add_edge("extract", "join")
-    g.add_edge("table", "join")
-
-    g.add_edge("join", "consolidate")
+    g.add_edge("extract", "consolidate")
+    # g.add_edge("table", "join")
+    # g.add_edge("join", "consolidate")
 
     g.add_edge("consolidate", "compare_extracted_original")
     g.add_edge("compare_extracted_original", "reasoning")
@@ -500,7 +499,6 @@ if __name__ == "__main__":
         "layout_tables": [],
         "isi_locations": [],
         "extracted_isi_chunks": [],
-        "table_isi_content": [],
         "consolidated_isi": "",
         "isi_metadata": {},
         "completeness_score": 0.0,
@@ -516,7 +514,12 @@ if __name__ == "__main__":
     result = app.invoke(initial_state)
 
     print("\nCOMPLETENESS:", result["completeness_score"])
-    print("\nFINAL SCORE:", result.get("final_score_reasoning", {}).get("final_score"))
-    print("\nREASONING:", result.get("final_score_reasoning", {}).get("reasoning"))
+
+    scoring = result.get("final_score_reasoning", {})
+    print("\nFINAL SCORE:", scoring.get("final_score"))
+    print("\nREASONING:", scoring.get("reasoning"))
+    print("\nMISSING CONTENT:", scoring.get("missing_content"))
+    print("\nEXTRA CONTENT:", scoring.get("extra_content"))
+
     print("\nISI:\n")
     print(result["consolidated_isi"])
