@@ -20,6 +20,7 @@ load_dotenv()
 # STRUCTURED OUTPUT SCHEMAS  (THIS FIXES JSON ERRORS)
 # =========================================================
 
+
 class ISILocation(BaseModel):
     location_description: str
     content_preview: str
@@ -60,6 +61,7 @@ class ISIConsolidationResult(BaseModel):
 # LANGGRAPH STATE
 # =========================================================
 
+
 class ISIExtractionState(TypedDict):
     pdf_path: str
 
@@ -90,13 +92,11 @@ class ISIExtractionState(TypedDict):
 credential = DefaultAzureCredential()
 
 doc_client = DocumentIntelligenceClient(
-    endpoint=os.getenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT"),
-    credential=credential
+    endpoint=os.getenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT"), credential=credential
 )
 
 token_provider = get_bearer_token_provider(
-    credential,
-    "https://cognitiveservices.azure.com/.default"
+    credential, "https://cognitiveservices.azure.com/.default"
 )
 
 base_llm = AzureChatOpenAI(
@@ -105,12 +105,13 @@ base_llm = AzureChatOpenAI(
     azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME"),
     openai_api_version="2024-02-15-preview",
     temperature=0,
-    max_retries=3
+    max_retries=3,
 )
 
 # =========================================================
 # NODE 1 — LAYOUT EXTRACTION
 # =========================================================
+
 
 def extract_layout_node(state: ISIExtractionState) -> ISIExtractionState:
 
@@ -128,31 +129,38 @@ def extract_layout_node(state: ISIExtractionState) -> ISIExtractionState:
 
         pages = []
         for page in result.pages:
-            pages.append({
-                "page_number": page.page_number,
-                "lines": [l.content for l in page.lines] if page.lines else []
-            })
+            pages.append(
+                {
+                    "page_number": page.page_number,
+                    "lines": [line.content for line in page.lines]
+                    if page.lines
+                    else [],
+                }
+            )
 
         tables = []
         if result.tables:
             for table in result.tables:
-                tables.append({
-                    "row_count": table.row_count,
-                    "column_count": table.column_count,
-                    "cells": [
-                        {
-                            "content": c.content,
-                            "row_index": c.row_index,
-                            "column_index": c.column_index
-                        } for c in table.cells
-                    ]
-                })
+                tables.append(
+                    {
+                        "row_count": table.row_count,
+                        "column_count": table.column_count,
+                        "cells": [
+                            {
+                                "content": c.content,
+                                "row_index": c.row_index,
+                                "column_index": c.column_index,
+                            }
+                            for c in table.cells
+                        ],
+                    }
+                )
 
         return {
             "markdown_content": result.content,
             "layout_pages": pages,
             "layout_tables": tables,
-            "current_step": "layout_extracted"
+            "current_step": "layout_extracted",
         }
 
     except Exception as e:
@@ -163,34 +171,40 @@ def extract_layout_node(state: ISIExtractionState) -> ISIExtractionState:
 # NODE 2 — DETECT ISI
 # =========================================================
 
+
 def detect_isi_locations_node(state: ISIExtractionState) -> ISIExtractionState:
 
     llm = base_llm.with_structured_output(ISIDetectionResult)
 
     messages = [
-        SystemMessage(content="You identify Important Safety Information in pharma documents."),
-        HumanMessage(content=f"""
+        SystemMessage(
+            content="You identify Important Safety Information in pharma documents."
+        ),
+        HumanMessage(
+            content=f"""
 Find all Important Safety Information in this document.
 
-{state['markdown_content']}
-""")
+{state["markdown_content"]}
+"""
+        ),
     ]
 
     result: ISIDetectionResult = llm.invoke(messages)
 
     return {
-        "isi_locations": [l.model_dump() for l in result.isi_locations],
+        "isi_locations": [loc.model_dump() for loc in result.isi_locations],
         "isi_metadata": {
             "distribution": result.isi_distribution,
-            "total_sections": result.total_isi_sections
+            "total_sections": result.total_isi_sections,
         },
-        "current_step": "locations_detected"
+        "current_step": "locations_detected",
     }
 
 
 # =========================================================
 # NODE 3 — EXTRACT ISI TEXT
 # =========================================================
+
 
 def extract_isi_content_node(state: ISIExtractionState) -> ISIExtractionState:
 
@@ -200,21 +214,22 @@ def extract_isi_content_node(state: ISIExtractionState) -> ISIExtractionState:
 Extract COMPLETE Important Safety Information.
 
 Document:
-{state['markdown_content']}
+{state["markdown_content"]}
 
 Locations:
-{state['isi_locations']}
+{state["isi_locations"]}
 """)
 
     return {
         "extracted_isi_chunks": [c.model_dump() for c in result.isi_chunks],
-        "current_step": "isi_extracted"
+        "current_step": "isi_extracted",
     }
 
 
 # =========================================================
 # NODE 4 — TABLE ISI
 # =========================================================
+
 
 def extract_table_isi_node(state: ISIExtractionState) -> ISIExtractionState:
 
@@ -226,18 +241,19 @@ def extract_table_isi_node(state: ISIExtractionState) -> ISIExtractionState:
     for idx, table in enumerate(state["layout_tables"]):
         text = " ".join(cell["content"] for cell in table["cells"])
 
-        if any(x in text.lower() for x in [
-            "adverse",
-            "warning",
-            "contraindication",
-            "side effect",
-            "toxicity"
-        ]):
-            table_results.append({
-                "table_index": idx,
-                "content": text,
-                "table_type": "safety_data"
-            })
+        if any(
+            x in text.lower()
+            for x in [
+                "adverse",
+                "warning",
+                "contraindication",
+                "side effect",
+                "toxicity",
+            ]
+        ):
+            table_results.append(
+                {"table_index": idx, "content": text, "table_type": "safety_data"}
+            )
 
     return {"table_isi_content": table_results}
 
@@ -245,6 +261,7 @@ def extract_table_isi_node(state: ISIExtractionState) -> ISIExtractionState:
 # =========================================================
 # JOIN NODE (FIXES LANGGRAPH RACE CONDITION)
 # =========================================================
+
 
 def join_node(state: ISIExtractionState) -> ISIExtractionState:
     return state
@@ -254,6 +271,7 @@ def join_node(state: ISIExtractionState) -> ISIExtractionState:
 # NODE 5 — CONSOLIDATION
 # =========================================================
 
+
 def consolidate_isi_node(state: ISIExtractionState) -> ISIExtractionState:
 
     llm = base_llm.with_structured_output(ISIConsolidationResult)
@@ -262,10 +280,10 @@ def consolidate_isi_node(state: ISIExtractionState) -> ISIExtractionState:
 Combine and deduplicate all ISI.
 
 Chunks:
-{state['extracted_isi_chunks']}
+{state["extracted_isi_chunks"]}
 
 Tables:
-{state['table_isi_content']}
+{state["table_isi_content"]}
 """)
 
     metadata = state.get("isi_metadata", {})
@@ -282,14 +300,15 @@ Tables:
             "isi_content": result.consolidated_isi,
             "metadata": metadata,
             "completeness_score": result.completeness_score,
-            "notes": result.notes
-        }
+            "notes": result.notes,
+        },
     }
 
 
 # =========================================================
 # BUILD GRAPH
 # =========================================================
+
 
 def build_graph():
     g = StateGraph(ISIExtractionState)
@@ -321,11 +340,10 @@ def build_graph():
 # =========================================================
 
 if __name__ == "__main__":
-
     app = build_graph()
 
     initial_state = {
-        "pdf_path": r"C:\YOUR_PATH\file.pdf",
+        "pdf_path": "dummy_isi.pdf",
         "markdown_content": "",
         "layout_pages": [],
         "layout_tables": [],
@@ -338,7 +356,7 @@ if __name__ == "__main__":
         "duplicates_removed": 0,
         "final_isi": {},
         "current_step": "start",
-        "error_messages": []
+        "error_messages": [],
     }
 
     result = app.invoke(initial_state)
